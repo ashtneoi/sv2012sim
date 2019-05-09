@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::default::Default;
+use std::ops::Index;
+use std::slice::SliceIndex;
 
 #[derive(Clone)]
 struct Timeline {
@@ -41,10 +43,21 @@ impl TimeSlot {
         }
     }
 
-    fn execute_region<I: IntoIterator<Item=Event>>(&mut self, region: I) {
-        for ev in region {
-            ev.execute(self)
+    fn execute_region(&mut self, region: Region) {
+        // TODO: Initial capacity?
+        let mut buf = VecDeque::new();
+        buf.append(&mut self.regions[region as usize]);
+        for ev in buf {
+            ev.execute(self);
         }
+    }
+
+    fn region_set_is_empty<R>(&self, range: R) -> bool
+    where
+        R: SliceIndex<[VecDeque<Event>], Output=[VecDeque<Event>]>,
+        // ^ That shouldn't be necessary, but it is. :(
+    {
+        self.regions.index(range).iter().all(|x| x.is_empty())
     }
 
     fn execute(&mut self) {
@@ -52,34 +65,51 @@ impl TimeSlot {
 
         let mut buf = VecDeque::new();
 
-        buf.append(&mut self.regions[Preponed as usize]);
-        self.execute_region(buf.drain(..));
+        self.execute_region(Preponed);
 
-        buf.append(&mut self.regions[PreActive as usize]);
-        self.execute_region(buf.drain(..));
+        self.execute_region(PreActive);
 
-        while self.regions[Active as usize..=PrePostponed as usize].iter().any(
-            |x| !x.is_empty()
+        while !self.region_set_is_empty(
+            Active as usize..=PrePostponed as usize
         ) {
-            while let Some(first_nonempty) = self
+            while !self.region_set_is_empty(
+                Active as usize..=PostObserved as usize
+            ) {
+                self.execute_region(Active);
+
+                let first_nonempty = self
                     .regions[Active as usize..=PostObserved as usize]
                     .iter()
-                    .position(|x| !x.is_empty()) {
-                buf.append(&mut self.regions[Active as usize]);
-                self.execute_region(buf.drain(..));
-
-                if first_nonempty != Active as usize {
+                    .position(|x| !x.is_empty());
+                if let Some(first_nonempty) = first_nonempty {
                     buf.append(&mut self.regions[first_nonempty]);
                     self.regions[Active as usize].append(&mut buf)
                 }
             }
 
-            while let Some(first_nonempty) = self
+            while !self.region_set_is_empty(
+                Reactive as usize..=PostReNba as usize
+            ) {
+                self.execute_region(Reactive);
+
+                let first_nonempty = self
                     .regions[Reactive as usize..=PostReNba as usize]
                     .iter()
-                    .position(|x| !x.is_empty()) {
+                    .position(|x| !x.is_empty());
+                if let Some(first_nonempty) = first_nonempty {
+                    buf.append(&mut self.regions[first_nonempty]);
+                    self.regions[Reactive as usize].append(&mut buf)
+                }
+            }
+
+            if self.region_set_is_empty(
+                Active as usize..PostReNba as usize
+            ) {
+                self.execute_region(PrePostponed);
             }
         }
+
+        self.execute_region(Postponed);
     }
 }
 
